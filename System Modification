@@ -1,0 +1,107 @@
+
+#!/bin/bash
+
+# Function to display labeled output
+print_output() {
+  echo -e "\n[$1] $2\n"
+}
+
+# Function to check if a package is installed
+package_installed() {
+  dpkg -s "$1" &> /dev/null
+}
+
+# Function to update configuration files
+update_config() {
+  if grep -q "$1" "$2"; then
+    sed -i "s/^$1=.*/$1=$3/" "$2"
+  else
+    echo "$1=$3" >> "$2"
+  fi
+}
+
+# Function to add a rule to UFW
+add_ufw_rule() {
+  ufw allow "$1" > /dev/null
+}
+
+# Function to create user with SSH keys and sudo access
+create_user() {
+  username="$1"
+  ssh_pubkey="$2"
+  
+  useradd -m -s /bin/bash "$username"
+  mkdir -p "/home/$username/.ssh"
+  echo "$ssh_pubkey" >> "/home/$username/.ssh/authorized_keys"
+  chown -R "$username:$username" "/home/$username/.ssh"
+  usermod -aG sudo "$username"
+}
+
+# Update hostname
+new_hostname="autosrv"
+current_hostname=$(hostname)
+if [[ "$current_hostname" != "$new_hostname" ]]; then
+  print_output "Hostname" "Changing hostname to $new_hostname"
+  hostnamectl set-hostname "$new_hostname"
+else
+  print_output "Hostname" "Hostname is already set to $new_hostname"
+fi
+
+# Update network configuration
+print_output "Network Configuration" "Updating network configuration"
+update_config "address" "/etc/netplan/00-installer-config.yaml" "192.168.16.21/24"
+update_config "gateway4" "/etc/netplan/00-installer-config.yaml" "192.168.16.1"
+update_config "nameservers" "/etc/netplan/00-installer-config.yaml" "192.168.16.1"
+update_config "search" "/etc/netplan/00-installer-config.yaml" "home.arpa localdomain"
+netplan apply
+
+# Check and install required software
+print_output "Software Installation" "Checking and installing required software"
+if ! package_installed "openssh-server"; then
+  apt-get update
+  apt-get install -y openssh-server
+fi
+
+if ! package_installed "apache2"; then
+  apt-get update
+  apt-get install -y apache2
+fi
+
+if ! package_installed "squid"; then
+  apt-get update
+  apt-get install -y squid
+fi
+
+# Configure SSH server
+print_output "SSH Server Configuration" "Configuring SSH server"
+sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+service ssh restart
+
+# Configure Apache web server
+print_output "Apache Configuration" "Configuring Apache web server"
+a2enmod ssl > /dev/null
+a2ensite default-ssl > /dev/null
+service apache2 restart
+
+# Configure Squid web proxy
+print_output "Squid Configuration" "Configuring Squid web proxy"
+sed -i 's/http_access deny all/http_access allow all/' /etc/squid/squid.conf
+service squid restart
+
+# Configure UFW firewall
+print_output "Firewall Configuration" "Configuring UFW firewall"
+ufw enable > /dev/null
+ufw allow 22 > /dev/null
+ufw allow 80 > /dev/null
+ufw allow 443 > /dev/null
+ufw allow 3128 > /dev/null
+
+# Create user accounts
+print_output "User Account Creation" "Creating user accounts"
+create_user "dennis" "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm"
+for username in "aubrey" "captain" "snibbles" "brownie" "scooter" "sandy" "perrier" "cindy" "tiger" "yoda"; do
+  create_user "$username" ""
+done
+
+print_output "Script Finished" "System modifications have been applied"
